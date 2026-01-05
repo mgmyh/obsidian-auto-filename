@@ -47,7 +47,10 @@ export default class AutoFilename extends Plugin {
 	// Function for renaming files
 	async renameFile(file: TFile, noDelay = false): Promise<void> {
 		if (!inTargetFolder(file, this.settings)) return; // Return if file is not within the target folder/s
-
+		// 检查文件是否已经是命名文件，如果是则不需要重命名
+		// 未命名文件通常以"Untitled"开头或没有实际内容
+		const isUntitledFile = file.basename.startsWith("Untitled") || file.basename === "";
+		if (!isUntitledFile) return; // 如果不是未命名文件，则无需重命名
 		// Debounce to avoid performance issues if noDelay is disabled or checkInterval is 0
 		if (noDelay === false) {
 			if (onTimeout) {
