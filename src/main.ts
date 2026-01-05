@@ -9,6 +9,7 @@ interface PluginSettings {
 	includeEmojis: boolean;
 	charCount: number;
 	checkInterval: number;
+	skipNamedFiles: boolean; // 如果文件名已经存在或者文件不是未命名，就不修改文件名
 }
 
 const DEFAULT_SETTINGS: PluginSettings = {
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: PluginSettings = {
 	includeEmojis: true,
 	charCount: 50,
 	checkInterval: 500,
+	skipNamedFiles: false, // 默认关闭，即默认情况下会重命名所有文件
 };
 
 // Global variables for "Rename all files" setting
@@ -32,13 +34,14 @@ let timeout: NodeJS.Timeout;
 let previousFile: string;
 
 function inTargetFolder(file: TFile, settings: PluginSettings): boolean {
-	if (settings.includeFolders.length === 0) return false; // False if user has no target folder selected
+	// 如果用户没有选择目标文件夹，则对所有文件生效
+	if (settings.includeFolders.length === 0) return true;
 
-	// True if folder is included
+	// 检查文件夹是否在目标文件夹列表中
 	if (settings.includeFolders.includes(file.parent?.path as string))
 		return true;
 
-	return false; // False if all checks fails
+	return false; // 如果所有检查都不通过，则返回 false
 }
 
 export default class AutoFilename extends Plugin {
@@ -47,6 +50,13 @@ export default class AutoFilename extends Plugin {
 	// Function for renaming files
 	async renameFile(file: TFile, noDelay = false): Promise<void> {
 		if (!inTargetFolder(file, this.settings)) return; // Return if file is not within the target folder/s
+		
+		// 如果开启了 skipNamedFiles 选项，检查文件是否已经是命名文件，如果是则不需要重命名
+		// 未命名文件通常以"Untitled"开头或没有实际内容
+		if (this.settings.skipNamedFiles) {
+			const isUntitledFile = file.basename.startsWith("Untitled") || file.basename === "";
+			if (!isUntitledFile) return; // 如果不是未命名文件，则无需重命名
+		}
 
 		// Debounce to avoid performance issues if noDelay is disabled or checkInterval is 0
 		if (noDelay === false) {
@@ -181,7 +191,10 @@ export default class AutoFilename extends Plugin {
 		let fileExists: boolean =
 			this.app.vault.getAbstractFileByPath(newPath) != null;
 		while (fileExists || tempNewPaths.includes(newPath)) {
-			if (file.path == newPath) return; // No need to rename if new filename == old filename
+			// 只有在文件名完全相同且不是未命名文件时才跳过重命名
+			if (file.path == newPath && !file.basename.startsWith("Untitled") && file.basename !== "") {
+				return; // No need to rename if new filename == old filename and file is not untitled
+			}
 			counter += 1;
 			newPath = `${parentPath}${newFileName} (${counter}).md`; // Adds (2), (3), (...) to avoid filename duplicates similar to windows.
 			fileExists = this.app.vault.getAbstractFileByPath(newPath) != null;
@@ -213,14 +226,107 @@ export default class AutoFilename extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new AutoFilenameSettings(this.app, this));
 
-		// Triggers when vault is modified such as when editing files.
-		// This is what triggers to rename the file
+		// 监听文件创建事件 - 当新文件被创建时触发重命名
 		this.registerEvent(
-			this.app.vault.on("modify", (abstractFile) => {
+			this.app.vault.on("create", (abstractFile) => {
 				if (abstractFile instanceof TFile) {
-					const noDelay = this.settings.checkInterval === 0; // enable noDelay if checkInterval is 0
-					this.renameFile(abstractFile, noDelay);
+					// 对于新创建的文件，我们只在它是空文件或"Untitled"文件时才重命名
+					// 使用setTimeout确保文件内容已经完全初始化
+					setTimeout(async () => {
+						const content = await this.app.vault.read(abstractFile);
+						// 如果文件内容为空或基本上是空的，我们等待内容添加后再重命名
+						if (content.trim().length === 0) {
+							// 文件是空的，我们设置一个监听器来等待内容变化
+							const contentCheckInterval = setInterval(async () => {
+								const updatedContent = await this.app.vault.read(abstractFile);
+								if (updatedContent.trim().length > 0) {
+									// 内容已添加，执行重命名
+									clearInterval(contentCheckInterval);
+									this.renameFile(abstractFile, true); // 使用 noDelay=true 立即重命名
+								}
+							}, 300); // 每300ms检查一次，直到有内容为止，最多检查10次
+							
+							// 设置超时，防止无限期检查
+							setTimeout(() => {
+								clearInterval(contentCheckInterval);
+							}, 10000); // 10秒后停止检查
+						} else {
+							// 文件已经有内容，直接重命名
+							this.renameFile(abstractFile, true);
+						}
+					}, 100); // 延迟100ms确保文件完全创建
 				}
+			}),
+		);
+
+		// 添加右键菜单项
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, view) => {
+				// 添加"使用选中文本作为文件名"菜单项
+				menu.addItem((item) => {
+					item
+						.setTitle("使用选中文本作为文件名")
+						.setIcon("file-plus")
+						.onClick(async () => {
+							// 获取当前编辑器中的选中文本
+							const selectedText = editor.getSelection();
+							if (!selectedText) {
+								new Notice("请先选择要作为文件名的文本");
+								return;
+							}
+							
+							// 获取当前文件
+							const file = view.file;
+							if (!file) {
+								new Notice("无法获取当前文件");
+								return;
+							}
+							
+							// 处理文件名，移除非法字符
+							const illegalChars = '\\/:*?"<>|#^[]';
+							let newFileName = selectedText;
+							
+							// 移除非法字符
+							for (const char of illegalChars) {
+								newFileName = newFileName.replace(new RegExp('\\' + char, 'g'), '');
+							}
+							
+							// 处理空白字符
+							newFileName = newFileName
+								.trim()
+								.replace(/\s+/g, " ");
+							
+							// 如果文件名为空，则使用默认名称
+							if (newFileName === "") {
+								newFileName = "Untitled";
+							}
+							
+							// 获取文件路径
+							const parentPath = file.parent?.path === "/" ? "" : file.parent?.path + "/";
+							let newPath = `${parentPath}${newFileName}.md`;
+							
+							// 检查文件是否已存在
+							let counter = 1;
+							let fileExists = this.app.vault.getAbstractFileByPath(newPath) != null;
+							while (fileExists) {
+								if (file.path == newPath) {
+									new Notice("文件名已经是当前选中的文本");
+									return;
+								}
+								counter += 1;
+								newPath = `${parentPath}${newFileName} (${counter}).md`;
+								fileExists = this.app.vault.getAbstractFileByPath(newPath) != null;
+							}
+							
+							// 重命名文件
+							try {
+								await this.app.fileManager.renameFile(file, newPath);
+								new Notice(`文件已重命名为: ${newFileName}`);
+							} catch (error) {
+								new Notice(`重命名失败: ${error}`);
+							}
+						});
+				});
 			}),
 		);
 
@@ -410,8 +516,23 @@ class AutoFilenameSettings extends PluginSettingTab {
 						}
 					}),
 			);
-
+		
 		// Setting 9
+		new Setting(this.containerEl)
+			.setName("Skip named files")
+			.setDesc(
+				"If enabled, the plugin will only rename files that are untitled (starting with 'Untitled' or have no filename)."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.skipNamedFiles)
+					.onChange(async (value) => {
+						this.plugin.settings.skipNamedFiles = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Setting 10
 		new Setting(this.containerEl)
 			.setName("Rename all files")
 			.setDesc(
