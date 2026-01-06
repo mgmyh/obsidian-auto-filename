@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-auto-filename",
-	"version": "1.2.1",
+	"version": "1.2.2",
 	"description": "Auto Filename is an Obsidian.md plugin that automatically renames files in Obsidian based on the first x characters of the file, saving you time and effort.",
 	"main": "main.js",
 	"scripts": {
@@ -13,7 +13,7 @@
 		"obsidian",
 		"automation"
 	],
-	"author": "rcsaquino",
+	"author": "mgmyh",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^16.11.6",

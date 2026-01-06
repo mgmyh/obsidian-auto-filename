@@ -32,7 +32,7 @@ let timeout: NodeJS.Timeout;
 let previousFile: string;
 
 function inTargetFolder(file: TFile, settings: PluginSettings): boolean {
-	if (settings.includeFolders.length === 0) return false; // False if user has no target folder selected
+	if (settings.includeFolders.length === 0) return false; // True if user has no target folder selected (apply to all folders)
 
 	// True if folder is included
 	if (settings.includeFolders.includes(file.parent?.path as string))
@@ -48,11 +48,16 @@ export default class AutoFilename extends Plugin {
 	async renameFile(file: TFile, noDelay = false): Promise<void> {
 		if (!inTargetFolder(file, this.settings)) return; // Return if file is not within the target folder/s
 
+		// Only rename files that are named "未命名" or "Untitled" (with optional numbers)
+		const fileBaseName = file.basename; // Get filename without extension
+		const isUntitledPattern = /^(未命名|Untitled)(\s*\(\d+\))?$/i;
+		if (!isUntitledPattern.test(fileBaseName)) return; // Skip if not an untitled file
+
 		// Debounce to avoid performance issues if noDelay is disabled or checkInterval is 0
 		if (noDelay === false) {
 			if (onTimeout) {
 				// Clear timeout only if renameFile is called on the same file.
-				if (previousFile == file.path) {
+				if (previousFile === file.path) {
 					clearTimeout(timeout);
 				}
 
@@ -74,11 +79,11 @@ export default class AutoFilename extends Plugin {
 		// Supports YAML depending on user preference
 		if (this.settings.supportYAML && content.startsWith("---")) {
 			const index = content.indexOf("---", 3); // returns -1 if none
-			if (index != -1) content = content.slice(index + 3).trimStart(); // Add 3 to cover "---" || Cleanup white spaces and newlines at start
+			if (index !== -1) content = content.slice(index + 3).trimStart(); // Add 3 to cover "---" || Cleanup white spaces and newlines at start
 		}
 
 		// Use the header as filename depending on user preference
-		if (this.settings.useHeader && content[0] == "#") {
+		if (this.settings.useHeader && content[0] === "#") {
 			const headerArr: string[] = [
 				"# ",
 				"## ",
@@ -90,7 +95,7 @@ export default class AutoFilename extends Plugin {
 			for (let i = 0; i < headerArr.length; i++) {
 				if (content.startsWith(headerArr[i])) {
 					const index = content.indexOf("\n");
-					if (index != -1) content = content.slice(i + 2, index);
+					if (index !== -1) content = content.slice(headerArr[i].length, index);
 					break;
 				}
 			}
@@ -161,7 +166,7 @@ export default class AutoFilename extends Plugin {
 			.replace(/\s+/g, " "); // Replace consecutive whitespace characters with a space
 
 		// Remove all leading "." to avoid naming issues.
-		while (newFileName[0] == ".") {
+		while (newFileName.length > 0 && newFileName[0] === ".") {
 			newFileName = newFileName.slice(1);
 		}
 
@@ -172,19 +177,21 @@ export default class AutoFilename extends Plugin {
 		if (isIllegalName) newFileName = "Untitled";
 
 		const parentPath =
-			file.parent?.path === "/" ? "" : file.parent?.path + "/";
+			!file.parent || file.parent.path === "/" ? "" : file.parent.path + "/";
 
 		let newPath = `${parentPath}${newFileName}.md`;
+
+		// No need to rename if new filename == old filename
+		if (file.path === newPath) return;
 
 		// Duplicate checker: If file exists or newPath is in tempNewPaths, enter loop.
 		let counter = 1;
 		let fileExists: boolean =
-			this.app.vault.getAbstractFileByPath(newPath) != null;
+			this.app.vault.getAbstractFileByPath(newPath) !== null;
 		while (fileExists || tempNewPaths.includes(newPath)) {
-			if (file.path == newPath) return; // No need to rename if new filename == old filename
 			counter += 1;
 			newPath = `${parentPath}${newFileName} (${counter}).md`; // Adds (2), (3), (...) to avoid filename duplicates similar to windows.
-			fileExists = this.app.vault.getAbstractFileByPath(newPath) != null;
+			fileExists = this.app.vault.getAbstractFileByPath(newPath) !== null;
 		}
 
 		// Populate tempNewPaths if noDelay is enabled to avoid duplicate bugs
@@ -195,6 +202,74 @@ export default class AutoFilename extends Plugin {
 		// Rename file and increment renamedFileCount
 		await this.app.fileManager.renameFile(file, newPath);
 		renamedFileCount += 1;
+	}
+
+	// Function for manually renaming file with selected text
+	async renameFileWithText(file: TFile, selectedText: string): Promise<void> {
+		const illegalChars = '\\/:*?"<>|#^[]'; // Characters that should be avoided in filenames
+		const illegalNames: string[] = [
+			"CON", "PRN", "AUX", "NUL",
+			"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM0",
+			"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT0",
+		];
+
+		let newFileName = selectedText.trim();
+
+		// Remove illegal characters
+		for (let i = 0; i < illegalChars.length; i++) {
+			newFileName = newFileName.split(illegalChars[i]).join("");
+		}
+
+		// Remove emojis as set by user
+		if (!this.settings.includeEmojis) {
+			newFileName = newFileName.replace(
+				/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g,
+				"",
+			);
+		}
+
+		newFileName = newFileName
+			.trim()
+			.replace(/\s+/g, " "); // Replace consecutive whitespace characters with a space
+
+		// Remove all leading "." to avoid naming issues.
+		while (newFileName.length > 0 && newFileName[0] === ".") {
+			newFileName = newFileName.slice(1);
+		}
+
+		// Change to Untitled if newFileName outputs to nothing, or if it matches any of the illegal names.
+		const isIllegalName =
+			newFileName === "" ||
+			illegalNames.includes(newFileName.toUpperCase());
+		if (isIllegalName) {
+			new Notice("Invalid filename. Please select valid text.");
+			return;
+		}
+
+		const parentPath =
+			!file.parent || file.parent.path === "/" ? "" : file.parent.path + "/";
+
+		let newPath = `${parentPath}${newFileName}.md`;
+
+		// No need to rename if new filename == old filename
+		if (file.path === newPath) {
+			new Notice("Filename is already the same.");
+			return;
+		}
+
+		// Duplicate checker: If file exists, add counter
+		let counter = 1;
+		let fileExists: boolean =
+			this.app.vault.getAbstractFileByPath(newPath) !== null;
+		while (fileExists) {
+			counter += 1;
+			newPath = `${parentPath}${newFileName} (${counter}).md`;
+			fileExists = this.app.vault.getAbstractFileByPath(newPath) !== null;
+		}
+
+		// Rename file
+		await this.app.fileManager.renameFile(file, newPath);
+		new Notice(`File renamed to: ${newFileName}${counter > 1 ? ` (${counter})` : ""}`);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -212,6 +287,26 @@ export default class AutoFilename extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.addSettingTab(new AutoFilenameSettings(this.app, this));
+
+		// Add command to rename file with selected text
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, view) => {
+				const selection = editor.getSelection();
+				if (selection && selection.trim().length > 0) {
+					menu.addItem((item) => {
+						item
+							.setTitle("以选取文本重命名")
+							.setIcon("pencil")
+							.onClick(async () => {
+								const file = view.file;
+								if (file) {
+									await this.renameFileWithText(file, selection);
+								}
+							});
+					});
+				}
+			}),
+		);
 
 		// Triggers when vault is modified such as when editing files.
 		// This is what triggers to rename the file
@@ -262,7 +357,7 @@ class AutoFilenameSettings extends PluginSettingTab {
 		new Setting(this.containerEl)
 			.setName("Include")
 			.setDesc(
-				"Folder paths where Auto Filename would auto rename files. Separate by new line. Case sensitive.",
+				"填写要自动重命名的文件夹路径。按新行分开，大小写敏感，默认为空不生效。",
 			)
 			.addTextArea((text) => {
 				text.setPlaceholder("/\nfolder\nfolder/subfolder")
