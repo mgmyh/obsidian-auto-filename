@@ -135,7 +135,7 @@ export default class AutoFilename extends Plugin {
 			// Adds "..." after the last character if file characters > n
 			if (i >= Number(this.settings.charCount)) {
 				newFileName = newFileName.trimEnd();
-				newFileName += "...";
+				newFileName += "";
 				break;
 			}
 			const char = content[i];
@@ -144,7 +144,7 @@ export default class AutoFilename extends Plugin {
 				// Ignore succeeding lines of text when determining filename depending on user preference.
 				if (this.settings.useFirstLine) {
 					newFileName = newFileName.trimEnd();
-					newFileName += "..."; // Adds "..." at the end to indicate there might be more text.
+					newFileName += ""; // Adds "..." at the end to indicate there might be more text.
 					break;
 				}
 			}

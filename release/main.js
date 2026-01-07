@@ -129,14 +129,14 @@ var AutoFilename = class extends import_obsidian.Plugin {
     for (let i = 0; i < content.length; i++) {
       if (i >= Number(this.settings.charCount)) {
         newFileName = newFileName.trimEnd();
-        newFileName += "...";
+        newFileName += "";
         break;
       }
       const char = content[i];
       if (char === "\n") {
         if (this.settings.useFirstLine) {
           newFileName = newFileName.trimEnd();
-          newFileName += "...";
+          newFileName += "";
           break;
         }
       }
